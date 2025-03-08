@@ -12,8 +12,5 @@ openpyxl>=3.0.9
 streamlit>=1.10.0
 tqdm>=4.62.3
 
-# Concurrent processing
-concurrent-futures-extra>=2.0.0
-
-# Random for user agent rotation
-random2>=1.0.1
+# Note: concurrent-futures-extra was removed as it's not available in the package registry
+# Standard concurrent.futures library will be used instead
