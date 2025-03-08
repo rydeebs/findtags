@@ -7,47 +7,45 @@ import re
 from urllib.parse import urlparse
 import concurrent.futures
 import time
-import ssl
 import json
 from datetime import datetime
-import nltk
-from nltk.corpus import stopwords
-import random
 import os
+import random
 
-# Download NLTK resources (run once)
+# Only try to download nltk data if nltk is installed
 try:
-    nltk.data.find('corpora/stopwords')
-except LookupError:
-    nltk.download('stopwords', quiet=True)
-
-# Disable SSL certificate verification (use with caution)
-ssl._create_default_https_context = ssl._create_unverified_context
+    import nltk
+    from nltk.corpus import stopwords
+    
+    # Download NLTK resources (run once)
+    try:
+        nltk.data.find('corpora/stopwords')
+    except LookupError:
+        nltk.download('stopwords', quiet=True)
+    
+    NLTK_AVAILABLE = True
+except ImportError:
+    NLTK_AVAILABLE = False
 
 # Set up page configuration
 st.set_page_config(
-    page_title="Advanced Website Keyword Extractor",
+    page_title="Website Keyword Extractor",
     page_icon="🔍",
     layout="wide"
 )
 
 # Add title and description
-st.title("Advanced Website Keyword Extractor")
+st.title("Website Keyword Extractor")
 st.markdown("Extract the 10 most common keywords or tags from your list of websites.")
 
 # Cache management - store previously extracted keywords
-def load_cache():
-    if os.path.exists('keyword_cache.json'):
-        try:
-            with open('keyword_cache.json', 'r') as f:
-                return json.load(f)
-        except:
-            return {}
+@st.cache_data
+def get_empty_cache():
     return {}
 
-def save_cache(cache):
-    with open('keyword_cache.json', 'w') as f:
-        json.dump(cache, f)
+# We'll use session state for cache instead of file system
+if "keyword_cache" not in st.session_state:
+    st.session_state.keyword_cache = get_empty_cache()
 
 # Function to normalize URLs
 def normalize_url(url):
@@ -66,15 +64,25 @@ def normalize_url(url):
     # Return the normalized domain
     return netloc
 
+# Define stopwords
+if NLTK_AVAILABLE:
+    english_stopwords = set(stopwords.words('english'))
+else:
+    # Fallback to a simple list of common stopwords if NLTK is not available
+    english_stopwords = set(['and', 'the', 'for', 'with', 'that', 'this', 'you', 'your', 'our', 'from', 
+                 'have', 'has', 'are', 'not', 'when', 'what', 'where', 'why', 'how', 'all',
+                 'been', 'being', 'both', 'but', 'by', 'can', 'could', 'did', 'do', 'does',
+                 'doing', 'down', 'each', 'few', 'more', 'most', 'off', 'on', 'once', 'only',
+                 'own', 'same', 'should', 'so', 'some', 'such', 'than', 'too', 'very', 'will'])
+
 # Function to extract keywords from a website with retry mechanism
 def extract_keywords_from_website(url, retries=3, backoff_factor=0.5):
     # Normalize URL for display and caching
     normalized_url = normalize_url(url)
     
     # Check cache first
-    cache = load_cache()
-    if normalized_url in cache:
-        return cache[normalized_url]
+    if normalized_url in st.session_state.keyword_cache:
+        return st.session_state.keyword_cache[normalized_url]
     
     for attempt in range(retries):
         try:
@@ -167,8 +175,7 @@ def extract_keywords_from_website(url, retries=3, backoff_factor=0.5):
             # Count occurrences of each keyword
             keyword_counter = Counter(keywords)
             
-            # Remove common English stop words using NLTK
-            english_stopwords = set(stopwords.words('english'))
+            # Remove common English stop words
             for word in list(keyword_counter.keys()):
                 if word in english_stopwords or len(word) <= 2:
                     del keyword_counter[word]
@@ -180,8 +187,7 @@ def extract_keywords_from_website(url, retries=3, backoff_factor=0.5):
             result = ', '.join([f"{k}" for k, _ in most_common]) if most_common else "No keywords found"
             
             # Save to cache
-            cache[normalized_url] = result
-            save_cache(cache)
+            st.session_state.keyword_cache[normalized_url] = result
             
             return result
             
@@ -197,7 +203,7 @@ def extract_keywords_from_website(url, retries=3, backoff_factor=0.5):
         except Exception as e:
             return f"Error: {str(e)}"
 
-# Function to process the list of websites with resumable processing
+# Function to process the list of websites
 def process_websites(urls, max_workers=10, batch_size=100):
     results = {}
     total_urls = len(urls)
@@ -374,7 +380,7 @@ with tab1:
                     # Download as Excel
                     buffer = pd.ExcelWriter(f'website_keywords_{timestamp}.xlsx', engine='xlsxwriter')
                     result_df.to_excel(buffer, index=False, sheet_name='Keywords')
-                    buffer.close()
+                    buffer.save()
                     with open(f'website_keywords_{timestamp}.xlsx', 'rb') as f:
                         excel_data = f.read()
                     col2.download_button(
@@ -398,7 +404,7 @@ with tab2:
     st.session_state.max_workers = st.slider(
         "Max parallel requests", 
         min_value=1, 
-        max_value=50, 
+        max_value=30, 
         value=st.session_state.get('max_workers', 10),
         help="Higher values process more websites simultaneously but may cause rate limiting"
     )
@@ -414,14 +420,12 @@ with tab2:
     
     # Cache management
     st.subheader("Cache Management")
-    cache = load_cache()
-    st.write(f"Cache contains data for {len(cache)} websites")
+    st.write(f"Cache contains data for {len(st.session_state.keyword_cache)} websites")
     
     if st.button("Clear Cache"):
-        if os.path.exists('keyword_cache.json'):
-            os.remove('keyword_cache.json')
-            st.success("Cache cleared successfully")
-            st.experimental_rerun()
+        st.session_state.keyword_cache = get_empty_cache()
+        st.success("Cache cleared successfully")
+        st.experimental_rerun()
 
 with tab3:
     st.header("Help & Information")
@@ -456,4 +460,9 @@ with tab3:
     
     st.subheader("Troubleshooting")
     st.markdown("""
-    - **Connection Errors**: Reduce the "Max parallel requests
+    - **Connection Errors**: Reduce the "Max parallel requests" in the Settings tab
+    - **Incomplete Results**: Some websites may block scraping - try lowering the parallel requests
+    - **No Keywords Found**: The website might be using JavaScript to render content or has unique tag structures
+    - **Processing Stops**: Use the "Continue Processing" button to resume where you left off
+    - **Large Files**: Break very large lists into smaller batches of 1000-2000 websites
+    """)
