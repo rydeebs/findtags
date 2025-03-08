@@ -11,20 +11,25 @@ from datetime import datetime
 import io
 import random
 
-# Only try to download nltk data if nltk is installed
-try:
-    import nltk
-    from nltk.corpus import stopwords
+# Initialize all session state variables at the very beginning
+# This must happen before any function definitions
+if "keyword_cache" not in st.session_state:
+    st.session_state["keyword_cache"] = {}
+
+if "processed_count" not in st.session_state:
+    st.session_state["processed_count"] = 0
     
-    # Download NLTK resources (run once)
-    try:
-        nltk.data.find('corpora/stopwords')
-    except LookupError:
-        nltk.download('stopwords', quiet=True)
+if "start_time" not in st.session_state:
+    st.session_state["start_time"] = time.time()
     
-    NLTK_AVAILABLE = True
-except ImportError:
-    NLTK_AVAILABLE = False
+if "results" not in st.session_state:
+    st.session_state["results"] = {}
+    
+if "max_workers" not in st.session_state:
+    st.session_state["max_workers"] = 10
+    
+if "batch_size" not in st.session_state:
+    st.session_state["batch_size"] = 100
 
 # Set up page configuration
 st.set_page_config(
@@ -37,24 +42,12 @@ st.set_page_config(
 st.title("Website Keyword Extractor")
 st.markdown("Extract the 10 most common keywords or tags from your list of websites.")
 
-# Initialize session state variables properly
-if "keyword_cache" not in st.session_state:
-    st.session_state.keyword_cache = {}
-
-if "processed_count" not in st.session_state:
-    st.session_state.processed_count = 0
-    
-if "start_time" not in st.session_state:
-    st.session_state.start_time = time.time()
-    
-if "results" not in st.session_state:
-    st.session_state.results = {}
-    
-if "max_workers" not in st.session_state:
-    st.session_state.max_workers = 10
-    
-if "batch_size" not in st.session_state:
-    st.session_state.batch_size = 100
+# Define a simple list of stopwords
+english_stopwords = set(['and', 'the', 'for', 'with', 'that', 'this', 'you', 'your', 'our', 'from', 
+             'have', 'has', 'are', 'not', 'when', 'what', 'where', 'why', 'how', 'all',
+             'been', 'being', 'both', 'but', 'by', 'can', 'could', 'did', 'do', 'does',
+             'doing', 'down', 'each', 'few', 'more', 'most', 'off', 'on', 'once', 'only',
+             'own', 'same', 'should', 'so', 'some', 'such', 'than', 'too', 'very', 'will'])
 
 # Function to normalize URLs
 def normalize_url(url):
@@ -73,25 +66,14 @@ def normalize_url(url):
     # Return the normalized domain
     return netloc
 
-# Define stopwords
-if NLTK_AVAILABLE:
-    english_stopwords = set(stopwords.words('english'))
-else:
-    # Fallback to a simple list of common stopwords if NLTK is not available
-    english_stopwords = set(['and', 'the', 'for', 'with', 'that', 'this', 'you', 'your', 'our', 'from', 
-                 'have', 'has', 'are', 'not', 'when', 'what', 'where', 'why', 'how', 'all',
-                 'been', 'being', 'both', 'but', 'by', 'can', 'could', 'did', 'do', 'does',
-                 'doing', 'down', 'each', 'few', 'more', 'most', 'off', 'on', 'once', 'only',
-                 'own', 'same', 'should', 'so', 'some', 'such', 'than', 'too', 'very', 'will'])
-
 # Function to extract keywords from a website with retry mechanism
 def extract_keywords_from_website(url, retries=3, backoff_factor=0.5):
     # Normalize URL for display and caching
     normalized_url = normalize_url(url)
     
     # Check cache first
-    if normalized_url in st.session_state.keyword_cache:
-        return st.session_state.keyword_cache[normalized_url]
+    if normalized_url in st.session_state["keyword_cache"]:
+        return st.session_state["keyword_cache"][normalized_url]
     
     for attempt in range(retries):
         try:
@@ -196,7 +178,7 @@ def extract_keywords_from_website(url, retries=3, backoff_factor=0.5):
             result = ', '.join([f"{k}" for k, _ in most_common]) if most_common else "No keywords found"
             
             # Save to cache
-            st.session_state.keyword_cache[normalized_url] = result
+            st.session_state["keyword_cache"][normalized_url] = result
             
             return result
             
@@ -230,13 +212,13 @@ def process_websites(urls, max_workers=10, batch_size=100):
     results_area = st.empty()
     
     # Calculate starting position for this batch
-    start_idx = st.session_state.processed_count
+    start_idx = st.session_state["processed_count"]
     end_idx = min(start_idx + batch_size, total_urls)
     current_batch = urls[start_idx:end_idx]
     
     if not current_batch:
         status_text.text("All websites have been processed!")
-        return st.session_state.results
+        return st.session_state["results"]
     
     # Update status
     status_text.text(f"Processing batch {start_idx//batch_size + 1} of {(total_urls+batch_size-1)//batch_size}...")
@@ -251,34 +233,34 @@ def process_websites(urls, max_workers=10, batch_size=100):
             url = future_to_url[future]
             try:
                 keywords = future.result()
-                st.session_state.results[url] = keywords
+                st.session_state["results"][url] = keywords
                 
                 # Update progress
-                st.session_state.processed_count += 1
-                progress_percent = st.session_state.processed_count / total_urls
+                st.session_state["processed_count"] += 1
+                progress_percent = st.session_state["processed_count"] / total_urls
                 progress_bar.progress(progress_percent)
                 
                 # Update metrics
-                elapsed_time = time.time() - st.session_state.start_time
+                elapsed_time = time.time() - st.session_state["start_time"]
                 estimated_total = elapsed_time / progress_percent if progress_percent > 0 else 0
                 time_remaining = estimated_total - elapsed_time if estimated_total > 0 else 0
                 
-                progress_counter.metric("Processed", f"{st.session_state.processed_count}/{total_urls}")
+                progress_counter.metric("Processed", f"{st.session_state['processed_count']}/{total_urls}")
                 time_metric.metric("Time Elapsed", f"{int(elapsed_time/60)}m {int(elapsed_time%60)}s")
                 completion_metric.metric("Est. Completion", f"{int(time_remaining/60)}m {int(time_remaining%60)}s")
                 
                 # Periodically update the displayed results
-                if st.session_state.processed_count % 10 == 0 or st.session_state.processed_count == total_urls:
-                    result_df = pd.DataFrame(list(st.session_state.results.items()), columns=['Website', 'Top Keywords'])
+                if st.session_state["processed_count"] % 10 == 0 or st.session_state["processed_count"] == total_urls:
+                    result_df = pd.DataFrame(list(st.session_state["results"].items()), columns=['Website', 'Top Keywords'])
                     results_area.dataframe(result_df)
                     
             except Exception as e:
-                st.session_state.results[url] = f"Error: {str(e)}"
-                st.session_state.processed_count += 1
+                st.session_state["results"][url] = f"Error: {str(e)}"
+                st.session_state["processed_count"] += 1
     
     # If there are more URLs to process, update status
-    if st.session_state.processed_count < total_urls:
-        status_text.text(f"Batch completed. {st.session_state.processed_count}/{total_urls} websites processed so far.")
+    if st.session_state["processed_count"] < total_urls:
+        status_text.text(f"Batch completed. {st.session_state['processed_count']}/{total_urls} websites processed so far.")
         
         # Auto-continue button
         if st.button("Process Next Batch"):
@@ -288,7 +270,7 @@ def process_websites(urls, max_workers=10, batch_size=100):
         progress_bar.progress(1.0)
         status_text.text(f"Completed processing all {total_urls} websites!")
     
-    return st.session_state.results
+    return st.session_state["results"]
 
 # Add tabs for different functionalities
 tab1, tab2, tab3 = st.tabs(["Extract Keywords", "Settings", "Help"])
@@ -336,9 +318,9 @@ with tab1:
             
             # Reset button to start fresh
             if col1.button("Reset Processing"):
-                st.session_state.processed_count = 0
-                st.session_state.start_time = time.time()
-                st.session_state.results = {}
+                st.session_state["processed_count"] = 0
+                st.session_state["start_time"] = time.time()
+                st.session_state["results"] = {}
                 st.success("Processing reset successfully!")
                 st.experimental_rerun()
             
@@ -350,12 +332,12 @@ with tab1:
                 with st.spinner('Extracting keywords from websites...'):
                     results = process_websites(
                         websites, 
-                        max_workers=st.session_state.max_workers, 
-                        batch_size=st.session_state.batch_size
+                        max_workers=st.session_state["max_workers"], 
+                        batch_size=st.session_state["batch_size"]
                     )
                 
                 # If processing is complete, offer downloads
-                if st.session_state.processed_count == len(websites):
+                if st.session_state["processed_count"] == len(websites):
                     result_df = pd.DataFrame(list(results.items()), columns=['Website', 'Top Keywords'])
                     
                     # Add timestamp to filenames
@@ -373,12 +355,14 @@ with tab1:
                         mime="text/csv"
                     )
                     
-                    # Download as Excel
+                    # Download as Excel - Fixed method for Excel writing
                     buffer = io.BytesIO()
                     with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
                         result_df.to_excel(writer, index=False, sheet_name='Keywords')
                     
+                    buffer.seek(0)
                     excel_data = buffer.getvalue()
+                    
                     col2.download_button(
                         label="Download Results as Excel",
                         data=excel_data,
@@ -397,29 +381,29 @@ with tab2:
     st.subheader("Performance Settings")
     
     # Adjust max workers (threads)
-    st.session_state.max_workers = st.slider(
+    st.session_state["max_workers"] = st.slider(
         "Max parallel requests", 
         min_value=1, 
         max_value=30, 
-        value=st.session_state.max_workers,
+        value=st.session_state["max_workers"],
         help="Higher values process more websites simultaneously but may cause rate limiting"
     )
     
     # Batch size for processing
-    st.session_state.batch_size = st.slider(
+    st.session_state["batch_size"] = st.slider(
         "Batch size", 
         min_value=10, 
         max_value=500, 
-        value=st.session_state.batch_size,
+        value=st.session_state["batch_size"],
         help="Number of websites to process in each batch"
     )
     
     # Cache management
     st.subheader("Cache Management")
-    st.write(f"Cache contains data for {len(st.session_state.keyword_cache)} websites")
+    st.write(f"Cache contains data for {len(st.session_state['keyword_cache'])} websites")
     
     if st.button("Clear Cache"):
-        st.session_state.keyword_cache = {}
+        st.session_state["keyword_cache"] = {}
         st.success("Cache cleared successfully")
         st.experimental_rerun()
 
