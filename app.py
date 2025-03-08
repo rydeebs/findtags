@@ -7,29 +7,8 @@ import re
 from urllib.parse import urlparse
 import concurrent.futures
 import time
-from datetime import datetime
 import io
 import random
-
-# Initialize all session state variables at the very beginning
-# This must happen before any function definitions
-if "keyword_cache" not in st.session_state:
-    st.session_state["keyword_cache"] = {}
-
-if "processed_count" not in st.session_state:
-    st.session_state["processed_count"] = 0
-    
-if "start_time" not in st.session_state:
-    st.session_state["start_time"] = time.time()
-    
-if "results" not in st.session_state:
-    st.session_state["results"] = {}
-    
-if "max_workers" not in st.session_state:
-    st.session_state["max_workers"] = 10
-    
-if "batch_size" not in st.session_state:
-    st.session_state["batch_size"] = 100
 
 # Set up page configuration
 st.set_page_config(
@@ -40,7 +19,7 @@ st.set_page_config(
 
 # Add title and description
 st.title("Website Keyword Extractor")
-st.markdown("Extract the 10 most common keywords or tags from your list of websites.")
+st.markdown("Extract the most common keywords or tags from your list of websites.")
 
 # Define a simple list of stopwords
 english_stopwords = set(['and', 'the', 'for', 'with', 'that', 'this', 'you', 'your', 'our', 'from', 
@@ -48,6 +27,10 @@ english_stopwords = set(['and', 'the', 'for', 'with', 'that', 'this', 'you', 'yo
              'been', 'being', 'both', 'but', 'by', 'can', 'could', 'did', 'do', 'does',
              'doing', 'down', 'each', 'few', 'more', 'most', 'off', 'on', 'once', 'only',
              'own', 'same', 'should', 'so', 'some', 'such', 'than', 'too', 'very', 'will'])
+
+# Initialize session state variables
+if 'results_df' not in st.session_state:
+    st.session_state['results_df'] = None
 
 # Function to normalize URLs
 def normalize_url(url):
@@ -66,383 +49,293 @@ def normalize_url(url):
     # Return the normalized domain
     return netloc
 
-# Function to extract keywords from a website with retry mechanism
-def extract_keywords_from_website(url, retries=3, backoff_factor=0.5):
-    # Normalize URL for display and caching
-    normalized_url = normalize_url(url)
-    
-    # Check cache first
-    if normalized_url in st.session_state["keyword_cache"]:
-        return st.session_state["keyword_cache"][normalized_url]
-    
-    for attempt in range(retries):
-        try:
-            # Add http:// prefix if missing
-            if not url.startswith(('http://', 'https://')):
-                url = 'https://' + url
+# Function to extract keywords from a website with enhanced search capabilities
+def extract_keywords_from_website(url, max_retries=3):
+    try:
+        # Add http:// prefix if missing
+        if not url.startswith(('http://', 'https://')):
+            url = 'https://' + url
 
-            # Rotate user agents to avoid blocking
-            user_agents = [
-                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-                'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Safari/605.1.15',
-                'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/92.0.4515.107 Safari/537.36',
-                'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:90.0) Gecko/20100101 Firefox/90.0'
-            ]
+        # Rotate user agents to avoid blocking
+        user_agents = [
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Safari/605.1.15',
+            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/92.0.4515.107 Safari/537.36',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:90.0) Gecko/20100101 Firefox/90.0'
+        ]
+        
+        headers = {
+            'User-Agent': random.choice(user_agents),
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Referer': 'https://www.google.com/',
+            'DNT': '1',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+        }
+        
+        # Enhanced retry mechanism
+        success = False
+        error_msg = ""
+        
+        for attempt in range(max_retries):
+            try:
+                # Fetch the website with a timeout
+                response = requests.get(url, headers=headers, timeout=15)
+                response.raise_for_status()  # Raise exception for HTTP errors
+                success = True
+                break
+            except requests.exceptions.RequestException as e:
+                error_msg = str(e)
+                # Wait before retrying
+                time.sleep(1 * (attempt + 1))
+        
+        if not success:
+            return f"Error: {error_msg}"
+        
+        # Parse HTML content
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Extract keywords from different sources
+        keywords = []
+        
+        # 1. Enhanced meta tag extraction (including OpenGraph and Twitter tags)
+        for meta in soup.find_all('meta'):
+            # Meta keywords
+            if meta.get('name') == 'keywords' and meta.get('content'):
+                keywords.extend([k.strip().lower() for k in meta.get('content').split(',')])
             
-            headers = {
-                'User-Agent': random.choice(user_agents),
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.5',
-                'Referer': 'https://www.google.com/',
-                'DNT': '1',
-                'Connection': 'keep-alive',
-                'Upgrade-Insecure-Requests': '1',
-            }
-            
-            # Fetch the website with a timeout
-            response = requests.get(url, headers=headers, timeout=15)
-            
-            # Check if we got a successful response
-            if response.status_code != 200:
-                raise requests.exceptions.RequestException(f"HTTP Error: {response.status_code}")
-            
-            # Parse HTML content
-            soup = BeautifulSoup(response.text, 'html.parser')
-            
-            # Extract keywords from different sources
-            keywords = []
-            
-            # 1. Meta keywords
-            meta_keywords = soup.find('meta', attrs={'name': 'keywords'})
-            if meta_keywords and meta_keywords.get('content'):
-                keywords.extend([k.strip().lower() for k in meta_keywords.get('content').split(',')])
-            
-            # 2. Meta description (for potential keywords)
-            meta_desc = soup.find('meta', attrs={'name': 'description'})
-            if meta_desc and meta_desc.get('content'):
-                desc_words = re.findall(r'\b\w+\b', meta_desc.get('content').lower())
+            # Meta description
+            if meta.get('name') == 'description' and meta.get('content'):
+                desc_words = re.findall(r'\b\w+\b', meta.get('content').lower())
                 keywords.extend([word for word in desc_words if len(word) > 3])
-            
-            # 3. Title tags
-            if soup.title:
-                title_words = re.findall(r'\b\w+\b', soup.title.text.lower())
-                keywords.extend([word for word in title_words if len(word) > 3])
-            
-            # 4. Heading tags (h1, h2, h3)
-            for heading in soup.find_all(['h1', 'h2', 'h3']):
+                
+            # OpenGraph tags
+            if meta.get('property') and 'og:' in meta.get('property') and meta.get('content'):
+                if 'title' in meta.get('property') or 'description' in meta.get('property'):
+                    og_words = re.findall(r'\b\w+\b', meta.get('content').lower())
+                    keywords.extend([word for word in og_words if len(word) > 3])
+        
+        # 2. Title tags
+        if soup.title:
+            title_words = re.findall(r'\b\w+\b', soup.title.text.lower())
+            keywords.extend([word for word in title_words if len(word) > 3])
+        
+        # 3. Heading tags with priority (h1, h2, h3)
+        for i, heading_tag in enumerate(['h1', 'h2', 'h3']):
+            # Give more weight to h1 than h2, and h2 more than h3
+            weight = 3 - i
+            for heading in soup.find_all(heading_tag):
                 heading_words = re.findall(r'\b\w+\b', heading.text.lower())
-                keywords.extend([word for word in heading_words if len(word) > 3])
-            
-            # 5. Article tags and main content
-            for content in soup.find_all(['article', 'main', 'section']):
+                filtered_words = [word for word in heading_words if len(word) > 3]
+                # Add words multiple times based on weight
+                keywords.extend(filtered_words * weight)
+        
+        # 4. Enhanced content extraction
+        content_tags = ['article', 'main', 'section', 'div']
+        content_classes = ['content', 'post', 'entry', 'article', 'main', 'blog']
+        
+        # Look for content in semantic tags first
+        for tag in content_tags[:3]:  # article, main, section
+            for content in soup.find_all(tag):
+                content_words = re.findall(r'\b\w+\b', content.text.lower())
+                keywords.extend([word for word in content_words if len(word) > 3])
+        
+        # Look for content in divs with specific classes
+        for cls in content_classes:
+            for content in soup.find_all('div', class_=re.compile(cls, re.I)):
                 content_words = re.findall(r'\b\w+\b', content.text.lower())
                 keywords.extend([word for word in content_words if len(word) > 3])
                 
-            # 6. Tag elements and category elements
-            tag_patterns = ['tag', 'category', 'topic', 'keyword', 'subject', 'label']
-            for pattern in tag_patterns:
-                # Look for elements with these classes or IDs
-                for tag in soup.find_all(class_=re.compile(pattern, re.I)):
-                    tag_text = tag.text.strip().lower()
-                    if tag_text and len(tag_text) > 2:
-                        keywords.append(tag_text)
-                
-                # Also check ID attributes
-                for tag in soup.find_all(id=re.compile(pattern, re.I)):
-                    tag_text = tag.text.strip().lower()
-                    if tag_text and len(tag_text) > 2:
-                        keywords.append(tag_text)
-            
-            # 7. Check for tags in URLs
-            for link in soup.find_all('a', href=True):
-                href = link['href']
-                if 'tag' in href or 'category' in href or 'topic' in href:
-                    # Extract the tag from the URL
-                    tag_match = re.search(r'(?:tag|category|topic)[=/]([^/&?]+)', href)
-                    if tag_match:
-                        tag = tag_match.group(1).replace('-', ' ').replace('_', ' ').lower()
-                        keywords.append(tag)
-            
-            # Count occurrences of each keyword
-            keyword_counter = Counter(keywords)
-            
-            # Remove common English stop words
-            for word in list(keyword_counter.keys()):
-                if word in english_stopwords or len(word) <= 2:
-                    del keyword_counter[word]
-            
-            # Get the 10 most common keywords
-            most_common = keyword_counter.most_common(10)
-            
-            # Format as a string: "keyword1, keyword2, keyword3, ..."
-            result = ', '.join([f"{k}" for k, _ in most_common]) if most_common else "No keywords found"
-            
-            # Save to cache
-            st.session_state["keyword_cache"][normalized_url] = result
-            
-            return result
-            
-        except requests.exceptions.RequestException as e:
-            if attempt < retries - 1:
-                # Wait with exponential backoff before retrying
-                wait_time = backoff_factor * (2 ** attempt)
-                time.sleep(wait_time)
-                continue
-            else:
-                return f"Error: Connection failed after {retries} attempts"
+        # 5. Enhanced tag extraction
+        # Look for tags in multiple places with various patterns
+        tag_patterns = ['tag', 'category', 'topic', 'keyword', 'subject', 'label']
         
-        except Exception as e:
-            return f"Error: {str(e)}"
+        # Check for elements with tag-related classes
+        for pattern in tag_patterns:
+            # Class contains pattern
+            for tag in soup.find_all(class_=re.compile(pattern, re.I)):
+                tag_text = tag.text.strip().lower()
+                if tag_text and len(tag_text) > 2:
+                    # Add tag multiple times to increase weight
+                    keywords.extend([tag_text] * 3)  
+            
+            # ID contains pattern
+            for tag in soup.find_all(id=re.compile(pattern, re.I)):
+                tag_text = tag.text.strip().lower()
+                if tag_text and len(tag_text) > 2:
+                    keywords.extend([tag_text] * 3)
+        
+        # 6. Check for tags in URLs
+        tag_url_patterns = [
+            r'(?:tag|tags)[=/]([^/&?#]+)',
+            r'(?:category|categories)[=/]([^/&?#]+)',
+            r'(?:topic|topics)[=/]([^/&?#]+)',
+            r'(?:keyword|keywords)[=/]([^/&?#]+)'
+        ]
+        
+        for link in soup.find_all('a', href=True):
+            href = link['href']
+            for pattern in tag_url_patterns:
+                match = re.search(pattern, href)
+                if match:
+                    tag = match.group(1).replace('-', ' ').replace('_', ' ').replace('+', ' ').lower()
+                    # Add URL tags with higher weight
+                    keywords.extend([tag] * 2)
+        
+        # Count occurrences of each keyword
+        keyword_counter = Counter(keywords)
+        
+        # Remove common English stop words and short words
+        for word in list(keyword_counter.keys()):
+            if word in english_stopwords or len(word) <= 2:
+                del keyword_counter[word]
+        
+        # Get the 10 most common keywords
+        most_common = keyword_counter.most_common(10)
+        
+        # Format as a string: "keyword1, keyword2, keyword3, ..."
+        if most_common:
+            return ', '.join([f"{k}" for k, _ in most_common])
+        else:
+            return "No keywords found"
+            
+    except Exception as e:
+        return f"Error: {str(e)}"
 
-# Function to process the list of websites
-def process_websites(urls, max_workers=10, batch_size=100):
-    total_urls = len(urls)
-    
-    # Display metrics
-    col1, col2, col3 = st.columns(3)
-    progress_counter = col1.empty()
-    time_metric = col2.empty()
-    completion_metric = col3.empty()
-    
+# Function to extract keywords from a batch of websites
+def process_websites_batch(websites):
     # Create a progress bar
     progress_bar = st.progress(0)
     status_text = st.empty()
     
-    # Results area
-    results_area = st.empty()
+    total = len(websites)
+    results = {}
     
-    # Calculate starting position for this batch
-    start_idx = st.session_state["processed_count"]
-    end_idx = min(start_idx + batch_size, total_urls)
-    current_batch = urls[start_idx:end_idx]
+    # Determine the number of workers
+    max_workers = min(10, total)  # Limit to max 10 workers
     
-    if not current_batch:
-        status_text.text("All websites have been processed!")
-        return st.session_state["results"]
-    
-    # Update status
-    status_text.text(f"Processing batch {start_idx//batch_size + 1} of {(total_urls+batch_size-1)//batch_size}...")
+    # Show status
+    status_text.text(f"Processing {total} websites...")
     
     # Use ThreadPoolExecutor for parallel processing
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-        # Submit all tasks and map URLs to their futures
-        future_to_url = {executor.submit(extract_keywords_from_website, url): url for url in current_batch}
+        future_to_url = {executor.submit(extract_keywords_from_website, url): url for url in websites}
         
-        # Process results as they complete
-        for future in concurrent.futures.as_completed(future_to_url):
+        for i, future in enumerate(concurrent.futures.as_completed(future_to_url)):
             url = future_to_url[future]
             try:
                 keywords = future.result()
-                st.session_state["results"][url] = keywords
-                
-                # Update progress
-                st.session_state["processed_count"] += 1
-                progress_percent = st.session_state["processed_count"] / total_urls
-                progress_bar.progress(progress_percent)
-                
-                # Update metrics
-                elapsed_time = time.time() - st.session_state["start_time"]
-                estimated_total = elapsed_time / progress_percent if progress_percent > 0 else 0
-                time_remaining = estimated_total - elapsed_time if estimated_total > 0 else 0
-                
-                progress_counter.metric("Processed", f"{st.session_state['processed_count']}/{total_urls}")
-                time_metric.metric("Time Elapsed", f"{int(elapsed_time/60)}m {int(elapsed_time%60)}s")
-                completion_metric.metric("Est. Completion", f"{int(time_remaining/60)}m {int(time_remaining%60)}s")
-                
-                # Periodically update the displayed results
-                if st.session_state["processed_count"] % 10 == 0 or st.session_state["processed_count"] == total_urls:
-                    result_df = pd.DataFrame(list(st.session_state["results"].items()), columns=['Website', 'Top Keywords'])
-                    results_area.dataframe(result_df)
-                    
+                results[url] = keywords
             except Exception as e:
-                st.session_state["results"][url] = f"Error: {str(e)}"
-                st.session_state["processed_count"] += 1
+                results[url] = f"Error: {str(e)}"
+            
+            # Update progress
+            progress = (i + 1) / total
+            progress_bar.progress(progress)
+            status_text.text(f"Processed {i+1}/{total} websites ({int(progress*100)}%)")
     
-    # If there are more URLs to process, update status
-    if st.session_state["processed_count"] < total_urls:
-        status_text.text(f"Batch completed. {st.session_state['processed_count']}/{total_urls} websites processed so far.")
+    # Create a DataFrame from results
+    df = pd.DataFrame(list(results.items()), columns=['Website', 'Top Keywords'])
+    
+    # Complete
+    progress_bar.progress(1.0)
+    status_text.text(f"Completed processing {total} websites!")
+    
+    return df
+
+# Main app layout
+uploaded_file = st.file_uploader("Upload a CSV or text file with website URLs (one per line)", type=["csv", "txt"])
+
+if uploaded_file is not None:
+    try:
+        # Process the uploaded file
+        file_extension = uploaded_file.name.split('.')[-1].lower()
         
-        # Auto-continue button
-        if st.button("Process Next Batch"):
-            return process_websites(urls, max_workers, batch_size)
-    else:
-        # All done
-        progress_bar.progress(1.0)
-        status_text.text(f"Completed processing all {total_urls} websites!")
-    
-    return st.session_state["results"]
-
-# Add tabs for different functionalities
-tab1, tab2, tab3 = st.tabs(["Extract Keywords", "Settings", "Help"])
-
-with tab1:
-    # File uploader widget
-    uploaded_file = st.file_uploader("Upload a CSV or text file with website URLs (one per line)", type=["csv", "txt"])
-
-    # Process the file when uploaded
-    if uploaded_file is not None:
-        try:
-            # Determine file type and read accordingly
-            file_extension = uploaded_file.name.split('.')[-1].lower()
+        if file_extension == 'csv':
+            # Read the CSV file
+            df = pd.read_csv(uploaded_file)
             
-            if file_extension == 'csv':
-                # Try to read CSV assuming different possible column names for URLs
-                df = pd.read_csv(uploaded_file)
-                
-                # Look for columns that might contain URLs
-                url_columns = [col for col in df.columns if any(kw in col.lower() for kw in ['url', 'website', 'site', 'link', 'domain'])]
-                
-                if url_columns:
-                    # Let user select the column
-                    url_column = st.selectbox("Select the column containing website URLs:", url_columns)
-                    websites = df[url_column].dropna().tolist()
-                else:
-                    # If no obvious URL column, let user select
-                    url_column = st.selectbox("Select the column containing website URLs:", df.columns)
-                    websites = df[url_column].dropna().tolist()
+            # Look for URL columns
+            url_columns = [col for col in df.columns if any(kw in col.lower() for kw in ['url', 'website', 'site', 'link', 'domain'])]
+            
+            if url_columns:
+                url_column = st.selectbox("Select the column containing website URLs:", url_columns)
             else:
-                # For text files, read line by line
-                content = uploaded_file.getvalue().decode("utf-8")
-                websites = [line.strip() for line in content.split('\n') if line.strip()]
+                url_column = st.selectbox("Select the column containing website URLs:", df.columns)
             
-            # Show website count and sample
-            st.write(f"Found {len(websites)} websites")
-            if len(websites) > 5:
-                with st.expander("View sample websites"):
-                    st.write(websites[:10])
-            else:
-                st.write("Websites:", websites)
-            
-            # Add a button to start processing
-            col1, col2 = st.columns(2)
-            
-            # Reset button to start fresh
-            if col1.button("Reset Processing"):
-                st.session_state["processed_count"] = 0
-                st.session_state["start_time"] = time.time()
-                st.session_state["results"] = {}
-                st.success("Processing reset successfully!")
-                st.experimental_rerun()
-            
-            # Start/continue processing button
-            start_button = col2.button("Start/Continue Processing")
-            
-            if start_button:
-                # Process the websites and get results
-                with st.spinner('Extracting keywords from websites...'):
-                    results = process_websites(
-                        websites, 
-                        max_workers=st.session_state["max_workers"], 
-                        batch_size=st.session_state["batch_size"]
-                    )
-                
-                # If processing is complete, offer downloads
-                if st.session_state["processed_count"] == len(websites):
-                    result_df = pd.DataFrame(list(results.items()), columns=['Website', 'Top Keywords'])
-                    
-                    # Add timestamp to filenames
-                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    
-                    # Provide download buttons
-                    col1, col2 = st.columns(2)
-                    
-                    # Download as CSV
-                    csv = result_df.to_csv(index=False)
-                    col1.download_button(
-                        label="Download Results as CSV",
-                        data=csv,
-                        file_name=f"website_keywords_{timestamp}.csv",
-                        mime="text/csv"
-                    )
-                    
-                    # Download as Excel - Fixed method for Excel writing
-                    buffer = io.BytesIO()
-                    with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
-                        result_df.to_excel(writer, index=False, sheet_name='Keywords')
-                    
-                    buffer.seek(0)
-                    excel_data = buffer.getvalue()
-                    
-                    col2.download_button(
-                        label="Download Results as Excel",
-                        data=excel_data,
-                        file_name=f"website_keywords_{timestamp}.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                    )
-            
-        except Exception as e:
-            st.error(f"Error processing file: {str(e)}")
-            st.exception(e)
+            # Get the website URLs
+            websites = df[url_column].dropna().tolist()
+        else:
+            # Read as text file
+            content = uploaded_file.getvalue().decode("utf-8")
+            websites = [line.strip() for line in content.split('\n') if line.strip()]
+        
+        st.write(f"Found {len(websites)} websites")
+        
+        # Show a sample
+        if len(websites) > 5:
+            with st.expander("View sample websites"):
+                st.write(websites[:10])
+        else:
+            st.write("Websites:", websites)
+        
+        # Process button
+        if st.button("Extract Keywords"):
+            # Process websites and get results
+            st.session_state['results_df'] = process_websites_batch(websites)
+    
+    except Exception as e:
+        st.error(f"Error processing file: {str(e)}")
+        st.exception(e)
 
-with tab2:
-    st.header("Settings")
+# Display results if available
+if st.session_state['results_df'] is not None:
+    st.subheader("Results")
+    st.dataframe(st.session_state['results_df'])
     
-    # Performance settings
-    st.subheader("Performance Settings")
+    # Download options
+    st.subheader("Download Results")
+    col1, col2 = st.columns(2)
     
-    # Adjust max workers (threads)
-    st.session_state["max_workers"] = st.slider(
-        "Max parallel requests", 
-        min_value=1, 
-        max_value=30, 
-        value=st.session_state["max_workers"],
-        help="Higher values process more websites simultaneously but may cause rate limiting"
+    # Download as CSV
+    csv = st.session_state['results_df'].to_csv(index=False)
+    col1.download_button(
+        label="Download as CSV",
+        data=csv,
+        file_name="website_keywords.csv",
+        mime="text/csv"
     )
     
-    # Batch size for processing
-    st.session_state["batch_size"] = st.slider(
-        "Batch size", 
-        min_value=10, 
-        max_value=500, 
-        value=st.session_state["batch_size"],
-        help="Number of websites to process in each batch"
+    # Download as Excel
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
+        st.session_state['results_df'].to_excel(writer, index=False, sheet_name='Keywords')
+    
+    buffer.seek(0)
+    col2.download_button(
+        label="Download as Excel",
+        data=buffer,
+        file_name="website_keywords.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
-    
-    # Cache management
-    st.subheader("Cache Management")
-    st.write(f"Cache contains data for {len(st.session_state['keyword_cache'])} websites")
-    
-    if st.button("Clear Cache"):
-        st.session_state["keyword_cache"] = {}
-        st.success("Cache cleared successfully")
-        st.experimental_rerun()
 
-with tab3:
-    st.header("Help & Information")
+# Help section
+with st.expander("Help & Information"):
+    st.write("""
+    ### About This App
     
-    st.subheader("About This App")
-    st.markdown("""
     This app extracts the most common keywords from websites by analyzing:
-    - Meta keywords tags
-    - Meta descriptions
-    - Page titles
-    - Headings (H1, H2, H3)
-    - Article and section content
+    - Meta keywords tags and OpenGraph metadata
+    - Page titles and headings (with priority weighting)
+    - Article and content sections
     - Tag elements and categories
     - URL patterns containing tag or category information
     
-    The app handles large lists of websites efficiently by:
-    - Processing in parallel using multiple threads
-    - Using a batch processing approach for large datasets
-    - Caching results to avoid duplicate work
-    - Implementing retry mechanisms for failed requests
-    """)
+    ### Tips for Best Results
     
-    st.subheader("Tips for Best Results")
-    st.markdown("""
-    - **URL Format**: Ensure your URLs are valid. The app will attempt to add 'https://' if missing
-    - **Processing Time**: Expect about 5-10 seconds per website on average
-    - **Rate Limiting**: Some websites may block scraping attempts if too many requests are made
-    - **Resume Processing**: If processing stops, you can continue where you left off
-    - **Column Selection**: For CSV files, ensure you select the correct column containing URLs
-    - **Performance Tuning**: Adjust the concurrent requests in Settings to balance speed vs. reliability
-    """)
-    
-    st.subheader("Troubleshooting")
-    st.markdown("""
-    - **Connection Errors**: Reduce the "Max parallel requests" in the Settings tab
-    - **Incomplete Results**: Some websites may block scraping - try lowering the parallel requests
-    - **No Keywords Found**: The website might be using JavaScript to render content or has unique tag structures
-    - **Processing Stops**: Use the "Continue Processing" button to resume where you left off
-    - **Large Files**: Break very large lists into smaller batches of 1000-2000 websites
+    - Ensure URLs are valid (http:// or https:// will be added if missing)
+    - For CSV files, select the column containing website URLs
+    - Some websites may block scraping attempts
+    - Processing large lists may take several minutes
     """)
