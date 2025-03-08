@@ -7,11 +7,9 @@ import re
 from urllib.parse import urlparse
 import concurrent.futures
 import time
-import json
 from datetime import datetime
-import os
-import random
 import io
+import random
 
 # Only try to download nltk data if nltk is installed
 try:
@@ -39,14 +37,24 @@ st.set_page_config(
 st.title("Website Keyword Extractor")
 st.markdown("Extract the 10 most common keywords or tags from your list of websites.")
 
-# Cache management - store previously extracted keywords
-@st.cache_data
-def get_empty_cache():
-    return {}
-
-# We'll use session state for cache instead of file system
+# Initialize session state variables properly
 if "keyword_cache" not in st.session_state:
-    st.session_state.keyword_cache = get_empty_cache()
+    st.session_state.keyword_cache = {}
+
+if "processed_count" not in st.session_state:
+    st.session_state.processed_count = 0
+    
+if "start_time" not in st.session_state:
+    st.session_state.start_time = time.time()
+    
+if "results" not in st.session_state:
+    st.session_state.results = {}
+    
+if "max_workers" not in st.session_state:
+    st.session_state.max_workers = 10
+    
+if "batch_size" not in st.session_state:
+    st.session_state.batch_size = 100
 
 # Function to normalize URLs
 def normalize_url(url):
@@ -206,14 +214,7 @@ def extract_keywords_from_website(url, retries=3, backoff_factor=0.5):
 
 # Function to process the list of websites
 def process_websites(urls, max_workers=10, batch_size=100):
-    results = {}
     total_urls = len(urls)
-    
-    # Create session state for tracking progress
-    if 'processed_count' not in st.session_state:
-        st.session_state.processed_count = 0
-        st.session_state.start_time = time.time()
-        st.session_state.results = {}
     
     # Display metrics
     col1, col2, col3 = st.columns(3)
@@ -335,20 +336,14 @@ with tab1:
             
             # Reset button to start fresh
             if col1.button("Reset Processing"):
-                if 'processed_count' in st.session_state:
-                    del st.session_state.processed_count
-                    del st.session_state.start_time
-                    del st.session_state.results
+                st.session_state.processed_count = 0
+                st.session_state.start_time = time.time()
+                st.session_state.results = {}
+                st.success("Processing reset successfully!")
                 st.experimental_rerun()
             
             # Start/continue processing button
             start_button = col2.button("Start/Continue Processing")
-            
-            # Get settings from the settings tab
-            if 'max_workers' not in st.session_state:
-                st.session_state.max_workers = 10
-            if 'batch_size' not in st.session_state:
-                st.session_state.batch_size = 100
             
             if start_button:
                 # Process the websites and get results
@@ -360,7 +355,7 @@ with tab1:
                     )
                 
                 # If processing is complete, offer downloads
-                if 'processed_count' in st.session_state and st.session_state.processed_count == len(websites):
+                if st.session_state.processed_count == len(websites):
                     result_df = pd.DataFrame(list(results.items()), columns=['Website', 'Top Keywords'])
                     
                     # Add timestamp to filenames
@@ -378,7 +373,7 @@ with tab1:
                         mime="text/csv"
                     )
                     
-                    # Download as Excel - Fixed the Excel writing method
+                    # Download as Excel
                     buffer = io.BytesIO()
                     with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
                         result_df.to_excel(writer, index=False, sheet_name='Keywords')
@@ -406,7 +401,7 @@ with tab2:
         "Max parallel requests", 
         min_value=1, 
         max_value=30, 
-        value=st.session_state.get('max_workers', 10),
+        value=st.session_state.max_workers,
         help="Higher values process more websites simultaneously but may cause rate limiting"
     )
     
@@ -415,7 +410,7 @@ with tab2:
         "Batch size", 
         min_value=10, 
         max_value=500, 
-        value=st.session_state.get('batch_size', 100),
+        value=st.session_state.batch_size,
         help="Number of websites to process in each batch"
     )
     
@@ -424,7 +419,7 @@ with tab2:
     st.write(f"Cache contains data for {len(st.session_state.keyword_cache)} websites")
     
     if st.button("Clear Cache"):
-        st.session_state.keyword_cache = get_empty_cache()
+        st.session_state.keyword_cache = {}
         st.success("Cache cleared successfully")
         st.experimental_rerun()
 
