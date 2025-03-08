@@ -11,6 +11,7 @@ import json
 from datetime import datetime
 import os
 import random
+import io
 
 # Only try to download nltk data if nltk is installed
 try:
@@ -377,12 +378,12 @@ with tab1:
                         mime="text/csv"
                     )
                     
-                    # Download as Excel
-                    buffer = pd.ExcelWriter(f'website_keywords_{timestamp}.xlsx', engine='xlsxwriter')
-                    result_df.to_excel(buffer, index=False, sheet_name='Keywords')
-                    buffer.save()
-                    with open(f'website_keywords_{timestamp}.xlsx', 'rb') as f:
-                        excel_data = f.read()
+                    # Download as Excel - Fixed the Excel writing method
+                    buffer = io.BytesIO()
+                    with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
+                        result_df.to_excel(writer, index=False, sheet_name='Keywords')
+                    
+                    excel_data = buffer.getvalue()
                     col2.download_button(
                         label="Download Results as Excel",
                         data=excel_data,
