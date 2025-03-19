@@ -120,10 +120,10 @@ def normalize_url(url):
     # Return the normalized domain
     return netloc
 
-# Function to check website status and detect parked domains
+# Improved function to check website status with better content detection
 def check_website_status(url, response=None, html_content=None):
     """
-    Check if a website is active and not a parked/placeholder domain.
+    Enhanced check if a website is active with better handling of modern websites.
     
     Args:
         url: The URL to check
@@ -138,18 +138,63 @@ def check_website_status(url, response=None, html_content=None):
     is_parked = False
     
     try:
-        # If response not provided, fetch it
+        # If response not provided, fetch it with multiple attempts and varying user agents
         if response is None:
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            }
+            user_agents = [
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36',
+                'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Safari/605.1.15',
+                'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/92.0.4515.107 Safari/537.36',
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:90.0) Gecko/20100101 Firefox/90.0',
+                'Mozilla/5.0 (iPad; CPU OS 12_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148'
+            ]
             
-            # Normalize URL
-            if not url.startswith(('http://', 'https://')):
-                url = 'https://' + url
+            # Try both HTTPS and HTTP if needed
+            protocols = ['https://', 'http://']
+            
+            for protocol in protocols:
+                # Normalize URL with current protocol
+                if url.startswith('http'):
+                    # Remove existing protocol
+                    url_parts = url.split('://', 1)
+                    if len(url_parts) > 1:
+                        clean_url = url_parts[1]
+                    else:
+                        clean_url = url
+                else:
+                    clean_url = url
                 
-            response = requests.get(url, headers=headers, timeout=10)
+                current_url = f"{protocol}{clean_url}"
+                
+                # Try with different user agents
+                for user_agent in user_agents:
+                    headers = {
+                        'User-Agent': user_agent,
+                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                        'Accept-Language': 'en-US,en;q=0.5',
+                        'Accept-Encoding': 'gzip, deflate, br',
+                        'Connection': 'keep-alive',
+                        'Upgrade-Insecure-Requests': '1',
+                        'Cache-Control': 'max-age=0'
+                    }
+                    
+                    try:
+                        # Use a session to handle cookies and redirects better
+                        session = requests.Session()
+                        response = session.get(current_url, headers=headers, timeout=15, allow_redirects=True)
+                        
+                        # If successful, break out of the loops
+                        if response.status_code == 200:
+                            break
+                    except:
+                        continue
+                
+                # If we got a valid response, break out of protocols loop
+                if response and response.status_code == 200:
+                    break
+        
+        # If we still don't have a response, raise an exception
+        if response is None:
+            raise requests.exceptions.RequestException("Failed to connect to website")
         
         status_code = response.status_code
         
@@ -171,32 +216,75 @@ def check_website_status(url, response=None, html_content=None):
         if 200 <= status_code < 300:
             # Use provided HTML content or parse from response
             if html_content is None:
-                html_content = response.text.lower()
-            else:
-                html_content = html_content.lower()
+                html_content = response.text
             
-            # Check for common parking page indicators
-            for pattern in PARKED_DOMAIN_PATTERNS:
-                if pattern.lower() in html_content:
+            # Check if the page has actual content vs. being a parked domain
+            soup = BeautifulSoup(html_content, 'html.parser')
+            
+            # Remove script and style elements that don't contribute to visible content
+            for script_or_style in soup(['script', 'style', 'noscript']):
+                script_or_style.decompose()
+            
+            # Get the visible text
+            page_text = soup.get_text().lower()
+            
+            # Check for common parking page indicators with exact phrases
+            parking_phrases = [
+                'domain is for sale',
+                'buy this domain',
+                'purchase this domain',
+                'domain may be for sale',
+                'domain parking',
+                'parked domain',
+                'this web page is parked',
+                'this website is temporarily unavailable',
+                'website coming soon',
+                'under construction',
+                'account suspended',
+                'pendingrenewaldeletion'
+            ]
+            
+            for phrase in parking_phrases:
+                if phrase in page_text:
                     is_parked = True
                     status_message = "Parked Domain"
                     break
             
-            # Check for very short content (often parking pages)
-            if len(html_content) < 500 and not is_parked:
-                # Look for minimal HTML structure
-                if html_content.count('<') < 20:
-                    is_parked = True
-                    status_message = "Minimal Page"
-            
-            # Check for domain registrar or hosting placeholder
-            registrar_patterns = ['godaddy', 'namecheap', 'hostgator', 'bluehost', 'domain', 'hosting']
-            for pattern in registrar_patterns:
-                if pattern in html_content and ('welcome' in html_content or 'domain' in html_content):
-                    if not is_parked:  # Don't override other parked signals
+            # If not yet identified as parked, check for more conditions
+            if not is_parked:
+                # Check for proper HTML structure - real sites usually have substantial structure
+                content_elements = soup.find_all(['div', 'section', 'article', 'main', 'header', 'footer', 'aside', 'nav'])
+                
+                # Check for common content indicators
+                has_links = len(soup.find_all('a')) > 5
+                has_images = len(soup.find_all('img')) > 0
+                has_paragraphs = len(soup.find_all('p')) > 2
+                has_headings = len(soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6'])) > 0
+                
+                # More sophisticated content check
+                is_real_site = (
+                    has_links or 
+                    has_images or 
+                    has_paragraphs or 
+                    has_headings or 
+                    len(content_elements) > 5
+                )
+                
+                # If the page fails most content checks, it might be parked
+                if not is_real_site and len(page_text.strip()) < 1000:
+                    # Do a final check for registrar placeholders
+                    registrar_patterns = ['godaddy', 'namecheap', 'hostgator', 'bluehost', 'domain for sale']
+                    
+                    for pattern in registrar_patterns:
+                        if pattern in page_text and ('welcome' in page_text or 'domain' in page_text):
+                            is_parked = True
+                            status_message = "Registrar Placeholder"
+                            break
+                            
+                    # If still not marked as parked but has very little content
+                    if not is_parked and len(page_text.strip()) < 200:
                         is_parked = True
-                        status_message = "Registrar Placeholder"
-                        break
+                        status_message = "Minimal Page"
     
     except requests.exceptions.ConnectionError:
         status_code = -1
@@ -207,9 +295,9 @@ def check_website_status(url, response=None, html_content=None):
     except requests.exceptions.TooManyRedirects:
         status_code = -3
         status_message = "Too Many Redirects"
-    except requests.exceptions.RequestException:
+    except requests.exceptions.RequestException as e:
         status_code = -4
-        status_message = "Request Failed"
+        status_message = f"Request Failed: {str(e)[:30]}"
     except Exception as e:
         status_code = -99
         status_message = f"Error: {str(e)[:30]}"
@@ -263,57 +351,105 @@ def categorize_website(keywords, meta_description=""):
     
     return best_category, confidence
 
-# Function to extract keywords, meta information, and check status of a website
+# Enhanced function to extract website information with better content access
 def extract_website_info(url, max_retries=3):
     try:
-        # Add http:// prefix if missing
+        # Format URL properly
         if not url.startswith(('http://', 'https://')):
             url = 'https://' + url
 
+        # Remove trailing slashes for consistency
+        url = url.rstrip('/')
+
         # Rotate user agents to avoid blocking
         user_agents = [
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36',
             'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Safari/605.1.15',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
             'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/92.0.4515.107 Safari/537.36',
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:90.0) Gecko/20100101 Firefox/90.0'
         ]
         
+        # Enhanced headers to look more like a real browser
         headers = {
             'User-Agent': random.choice(user_agents),
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.5',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate, br',
             'Referer': 'https://www.google.com/',
             'DNT': '1',
             'Connection': 'keep-alive',
             'Upgrade-Insecure-Requests': '1',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'cross-site',
+            'Sec-Fetch-User': '?1',
+            'Cache-Control': 'max-age=0'
         }
         
-        # Enhanced retry mechanism
+        # Create a session to handle cookies and redirects
+        session = requests.Session()
+        
+        # Try both HTTPS and HTTP versions if needed
+        protocols = ['https://', 'http://']
         success = False
-        error_msg = ""
         response = None
+        final_url = None
         
-        for attempt in range(max_retries):
-            try:
-                # Fetch the website with a timeout
-                response = requests.get(url, headers=headers, timeout=15)
-                response.raise_for_status()  # Raise exception for HTTP errors
-                success = True
+        for protocol in protocols:
+            # Skip if we already succeeded
+            if success:
                 break
-            except requests.exceptions.RequestException as e:
-                error_msg = str(e)
-                # Wait before retrying
-                time.sleep(1 * (attempt + 1))
+                
+            # Create protocol-specific URL
+            if url.startswith('http'):
+                # Use URL as is for first attempt
+                if protocol == 'https://' and url.startswith('https://'):
+                    current_url = url
+                elif protocol == 'http://' and url.startswith('http://'):
+                    current_url = url
+                else:
+                    # Remove existing protocol for second attempt
+                    url_parts = url.split('://', 1)
+                    if len(url_parts) > 1:
+                        current_url = f"{protocol}{url_parts[1]}"
+                    else:
+                        current_url = f"{protocol}{url}"
+            else:
+                current_url = f"{protocol}{url}"
+            
+            # Try multiple user agents
+            for attempt in range(max_retries):
+                try:
+                    # Use a different user agent for each retry
+                    headers['User-Agent'] = random.choice(user_agents)
+                    
+                    # Fetch the website with a timeout, allowing redirects
+                    response = session.get(current_url, headers=headers, timeout=15, allow_redirects=True)
+                    
+                    # Check if we got a successful response
+                    if response.status_code == 200:
+                        success = True
+                        final_url = response.url  # Get final URL after possible redirects
+                        break
+                except requests.exceptions.RequestException:
+                    # Wait before retrying
+                    time.sleep(1 * (attempt + 1))
+            
+            # If protocol succeeded, break the loop
+            if success:
+                break
         
-        # Check website status
+        # Check website status using our improved function
         if response:
             status_code, status_message, is_parked = check_website_status(url, response=response, html_content=response.text if success else None)
         else:
             status_code, status_message, is_parked = check_website_status(url)
         
+        # If we couldn't connect at all
         if not success:
             return {
-                'keywords': f"Error: {error_msg}", 
+                'keywords': "Connection failed", 
                 'meta_description': '', 
                 'title': '', 
                 'category': 'Other', 
@@ -336,19 +472,6 @@ def extract_website_info(url, max_retries=3):
         page_title = ""
         if soup.title:
             page_title = soup.title.text.strip()
-        
-        # If the domain is parked, we'll return minimal information
-        if is_parked:
-            return {
-                'keywords': "Parked Domain",
-                'meta_description': meta_description,
-                'title': page_title,
-                'category': 'Other',
-                'confidence': 0,
-                'status_code': status_code,
-                'status': status_message,
-                'is_parked': is_parked
-            }
         
         # Extract keywords from different sources
         keywords = []
@@ -385,23 +508,30 @@ def extract_website_info(url, max_retries=3):
                 # Add words multiple times based on weight
                 keywords.extend(filtered_words * weight)
         
-        # 4. Enhanced content extraction
-        content_tags = ['article', 'main', 'section', 'div']
-        content_classes = ['content', 'post', 'entry', 'article', 'main', 'blog', 'about', 'product', 'service']
+        # 4. Enhanced content extraction - look in more places for content
+        content_tags = ['article', 'main', 'section', 'div', 'p', 'span']
+        content_classes = ['content', 'post', 'entry', 'article', 'main', 'blog', 'about', 'product', 
+                          'service', 'description', 'text', 'body', 'page', 'container']
         
         # Look for content in semantic tags first
-        for tag in content_tags[:3]:  # article, main, section
+        for tag in content_tags[:4]:  # article, main, section, div
             for content in soup.find_all(tag):
                 content_words = re.findall(r'\b\w+\b', content.text.lower())
                 keywords.extend([word for word in content_words if len(word) > 3])
         
         # Look for content in divs with specific classes
         for cls in content_classes:
-            for content in soup.find_all('div', class_=re.compile(cls, re.I)):
+            for content in soup.find_all(['div', 'section'], class_=re.compile(cls, re.I)):
                 content_words = re.findall(r'\b\w+\b', content.text.lower())
                 keywords.extend([word for word in content_words if len(word) > 3])
+        
+        # 5. Look for text in paragraphs (often contains important content)
+        for p in soup.find_all('p'):
+            if len(p.text.strip()) > 20:  # Only meaningful paragraphs
+                p_words = re.findall(r'\b\w+\b', p.text.lower())
+                keywords.extend([word for word in p_words if len(word) > 3])
                 
-        # 5. Enhanced tag extraction
+        # 6. Enhanced tag extraction
         # Look for tags in multiple places with various patterns
         tag_patterns = ['tag', 'category', 'topic', 'keyword', 'subject', 'label']
         
@@ -420,7 +550,7 @@ def extract_website_info(url, max_retries=3):
                 if tag_text and len(tag_text) > 2:
                     keywords.extend([tag_text] * 3)
         
-        # 6. Check for tags in URLs
+        # 7. Check for tags in URLs
         tag_url_patterns = [
             r'(?:tag|tags)[=/]([^/&?#]+)',
             r'(?:category|categories)[=/]([^/&?#]+)',
@@ -436,6 +566,14 @@ def extract_website_info(url, max_retries=3):
                     tag = match.group(1).replace('-', ' ').replace('_', ' ').replace('+', ' ').lower()
                     # Add URL tags with higher weight
                     keywords.extend([tag] * 2)
+        
+        # Look for product names in the page (often good keywords for a business)
+        product_patterns = soup.find_all(['div', 'section', 'article'], class_=re.compile('product|item|service', re.I))
+        for product in product_patterns:
+            product_name = product.find(['h2', 'h3', 'h4', 'strong', 'b'])
+            if product_name:
+                product_words = re.findall(r'\b\w+\b', product_name.text.lower())
+                keywords.extend([word for word in product_words if len(word) > 3])
         
         # Count occurrences of each keyword
         keyword_counter = Counter(keywords)
@@ -465,7 +603,8 @@ def extract_website_info(url, max_retries=3):
             'confidence': confidence,
             'status_code': status_code,
             'status': status_message,
-            'is_parked': is_parked
+            'is_parked': is_parked,
+            'final_url': final_url  # Include the final URL after redirects
         }
             
     except Exception as e:
@@ -477,9 +616,10 @@ def extract_website_info(url, max_retries=3):
             'confidence': 0,
             'status_code': -99,
             'status': f"Error: {str(e)[:30]}",
-            'is_parked': False
+            'is_parked': False,
+            'final_url': None
         }
-
+        
 # Function to process a batch of websites
 def process_websites_batch(websites):
     # Create a progress bar
