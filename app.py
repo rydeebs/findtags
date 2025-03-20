@@ -304,52 +304,277 @@ def check_website_status(url, response=None, html_content=None):
     
     return status_code, status_message, is_parked
 
-# Function to categorize a website based on extracted keywords and meta descriptions
-def categorize_website(keywords, meta_description=""):
+# Enhanced function to categorize a website based on extracted keywords and meta descriptions
+def categorize_website(keywords, meta_description="", url="", page_title=""):
+    """
+    Improved categorization function that uses multiple signals to determine the website category.
+    
+    Args:
+        keywords: Extracted keywords string
+        meta_description: Page meta description
+        url: Website URL for domain-based hints
+        page_title: Page title for additional context
+        
+    Returns:
+        Tuple of (category, confidence)
+    """
     if not keywords or keywords == "No keywords found":
+        # Try to categorize based on URL and title alone
+        if url or page_title:
+            return categorize_by_url_and_title(url, page_title)
         return "Other", 0
-
-    # Create a single text for analysis
+    
+    # Create a comprehensive text for analysis by combining all available data
     full_text = keywords.lower()
     if meta_description:
         full_text += " " + meta_description.lower()
+    if page_title:
+        full_text += " " + page_title.lower()
+    if url:
+        # Extract domain parts for additional signals
+        domain_parts = extract_domain_parts(url)
+        if domain_parts:
+            full_text += " " + " ".join(domain_parts)
+    
+    # Split full text into individual words for more precise matching
+    word_set = set(re.findall(r'\b\w+\b', full_text.lower()))
     
     # Calculate scores for each category
     category_scores = {}
     for category, category_keywords in CATEGORY_KEYWORDS.items():
-        score = 0
+        # Calculate score based on:
+        # 1. Exact phrase matches (highest weight)
+        # 2. Individual keyword matches
+        # 3. Partial/substring matches (lower weight)
+        
+        # 1. First check for exact category phrases in the full text
+        exact_match_score = 0
+        for phrase in category_keywords:
+            if len(phrase.split()) > 1:  # Multi-word phrases get higher weight
+                if phrase in full_text:
+                    exact_match_score += 5 * len(phrase.split())  # Higher weight for longer phrases
+        
+        # 2. Then check for individual keyword matches
+        keyword_match_score = 0
         for keyword in category_keywords:
-            # Check if the keyword appears in the text
+            # Check for whole word matches
             matches = re.findall(r'\b' + re.escape(keyword) + r'\b', full_text)
             if matches:
                 # Add weight based on the number of matches and the specificity of the keyword
-                weight = 2 if len(keyword) > 5 else 1  # Longer keywords get more weight
-                score += len(matches) * weight
+                weight = 3 if len(keyword) > 5 else 2  # Longer keywords get more weight
+                keyword_match_score += len(matches) * weight
+            
+            # Check for word presence in set for faster matching
+            if keyword in word_set:
+                keyword_match_score += 2
+                
+        # 3. Check for partial/substring matches with lower weight
+        partial_match_score = 0
+        for keyword in category_keywords:
+            if len(keyword) > 4:  # Only consider substantial keywords
+                # Look for the keyword as part of compound words
+                for word in word_set:
+                    if len(word) > len(keyword) and keyword in word:
+                        partial_match_score += 1
         
-        category_scores[category] = score
+        # Combine scores with appropriate weighting
+        total_score = exact_match_score + keyword_match_score + (partial_match_score * 0.5)
+        
+        # Apply industry-specific bonuses
+        total_score = apply_industry_specific_rules(category, total_score, full_text, url)
+        
+        category_scores[category] = total_score
     
     # Find the category with the highest score
     max_score = max(category_scores.values()) if category_scores else 0
     
-    if max_score == 0:
+    # Only use "Other" if no category has a meaningful score
+    if max_score < 2:
+        # Try domain-based categorization as a last resort
+        fallback_category, fallback_score = categorize_by_url_and_title(url, page_title)
+        if fallback_score > 0:
+            return fallback_category, fallback_score / 10  # Normalize confidence
         return "Other", 0
     
-    # In case of a tie, pick the one that appears first in the text
+    # In case of a tie, use more sophisticated tie-breaking
     max_categories = [cat for cat, score in category_scores.items() if score == max_score]
     if len(max_categories) > 1:
-        for category in max_categories:
-            for keyword in CATEGORY_KEYWORDS[category]:
-                if keyword in full_text:
-                    first_index = full_text.find(keyword)
-                    category_scores[category] = (category_scores[category], -first_index)
-        
-        best_category = max(max_categories, key=lambda cat: category_scores[cat] if isinstance(category_scores[cat], tuple) else category_scores[cat])
+        # Try to break ties using domain name and title
+        if url or page_title:
+            domain_category, domain_score = categorize_by_url_and_title(url, page_title)
+            if domain_category in max_categories:
+                best_category = domain_category
+            else:
+                # Otherwise use the category that appears earliest in the text
+                best_category = find_earliest_category(max_categories, full_text)
+        else:
+            best_category = find_earliest_category(max_categories, full_text)
     else:
         best_category = max_categories[0]
     
-    confidence = min(max_score / 10, 1.0)  # Cap confidence at 1.0
+    # Calculate confidence (0.0 to 1.0)
+    confidence = min(max_score / 15, 1.0)  # Cap confidence at 1.0
     
     return best_category, confidence
+
+# Helper function to extract meaningful parts from domain name
+def extract_domain_parts(url):
+    if not url:
+        return []
+    
+    # Extract domain
+    domain = ""
+    if '://' in url:
+        domain = url.split('://', 1)[1].split('/', 1)[0]
+    else:
+        domain = url.split('/', 1)[0]
+    
+    # Remove www. if present
+    if domain.startswith('www.'):
+        domain = domain[4:]
+    
+    # Extract parts
+    parts = []
+    
+    # Split by dots and dashes
+    for part in re.split(r'[.-]', domain):
+        if len(part) > 2:  # Only meaningful parts
+            # Remove common TLDs and domain words
+            if part.lower() not in ['com', 'org', 'net', 'io', 'co', 'inc', 'llc', 'store', 'shop']:
+                parts.append(part.lower())
+    
+    # Add compound words using camelCase and PascalCase detection
+    for part in parts[:]:  # Work on a copy of the list
+        # Find potential compound words
+        compounds = re.findall(r'([a-z])([A-Z])', part)
+        if compounds:
+            # Split at capital letters
+            words = re.sub(r'([a-z])([A-Z])', r'\1 \2', part).lower().split()
+            parts.extend([w for w in words if len(w) > 2])
+    
+    return parts
+
+# Helper function to find which category appears earliest in the text
+def find_earliest_category(categories, text):
+    first_index = float('inf')
+    earliest_category = categories[0]  # Default
+    
+    for category in categories:
+        for keyword in CATEGORY_KEYWORDS[category]:
+            index = text.find(keyword)
+            if index != -1 and index < first_index:
+                first_index = index
+                earliest_category = category
+    
+    return earliest_category
+
+# Helper function for domain and title-based categorization
+def categorize_by_url_and_title(url, title):
+    if not url and not title:
+        return "Other", 0
+    
+    # Create combined text from URL and title
+    combined = ""
+    domain_parts = extract_domain_parts(url)
+    if domain_parts:
+        combined += " ".join(domain_parts) + " "
+    if title:
+        combined += title.lower()
+    
+    # Convert to lowercase and create word set for efficient matching
+    combined = combined.lower()
+    word_set = set(re.findall(r'\b\w+\b', combined))
+    
+    # Calculate simple scores based on keyword presence
+    scores = {}
+    for category, keywords in CATEGORY_KEYWORDS.items():
+        score = 0
+        for keyword in keywords:
+            if keyword in combined:
+                score += 2
+            elif keyword in word_set:
+                score += 1
+        scores[category] = score
+    
+    # Get max score
+    if not scores:
+        return "Other", 0
+        
+    max_score = max(scores.values())
+    if max_score == 0:
+        return "Other", 0
+        
+    # Find category with max score
+    max_categories = [cat for cat, score in scores.items() if score == max_score]
+    return max_categories[0], max_score
+
+# Apply special rules for specific industries to improve categorization
+def apply_industry_specific_rules(category, score, text, url):
+    
+    # Footwear-specific bonuses
+    if category == "Footwear":
+        # Check for common footwear terms that may not be in the main keyword list
+        footwear_indicators = ['shoes', 'footwear', 'sneaker', 'boot', 'sandal', 'trainer', 'running shoe']
+        for indicator in footwear_indicators:
+            if indicator in text:
+                score += 3  # Strong bonus for shoe-specific terms
+        
+        # Check for sports + shoes combination
+        if 'sport' in text and ('shoe' in text or 'footwear' in text):
+            score += 4
+            
+        # Check for athletic terms often associated with footwear
+        athletic_terms = ['running', 'training', 'workout', 'gym', 'fitness', 'athletics', 'sport']
+        for term in athletic_terms:
+            if term in text:
+                score += 1.5  # Moderate bonus for athletic context
+    
+    # Electronics-specific bonuses
+    elif category == "Electronics":
+        tech_indicators = ['tech', 'electronic', 'device', 'gadget', 'computer', 'digital']
+        for indicator in tech_indicators:
+            if indicator in text:
+                score += 2
+    
+    # Medical-specific bonuses
+    elif category == "Medical":
+        if 'health' in text and ('care' in text or 'medical' in text):
+            score += 3
+    
+    # Food & Beverage bonuses
+    elif category == "Food & Beverage":
+        food_terms = ['recipe', 'ingredient', 'cook', 'kitchen', 'meal', 'restaurant', 'eat']
+        for term in food_terms:
+            if term in text:
+                score += 2
+    
+    # Home Goods bonuses
+    elif category == "Home Goods":
+        home_terms = ['home', 'house', 'living', 'decor', 'furniture']
+        for term in home_terms:
+            if term in text:
+                score += 2
+    
+    # Clothing bonuses
+    elif category == "Clothing":
+        clothing_terms = ['wear', 'apparel', 'clothing', 'fashion', 'style', 'outfit']
+        for term in clothing_terms:
+            if term in text:
+                score += 2
+    
+    # URL-based bonuses
+    if url:
+        domain_lower = url.lower()
+        if category == "Footwear" and ('shoe' in domain_lower or 'foot' in domain_lower):
+            score += 4
+        elif category == "Clothing" and ('apparel' in domain_lower or 'wear' in domain_lower or 'cloth' in domain_lower):
+            score += 4
+        elif category == "Electronics" and ('tech' in domain_lower or 'electronic' in domain_lower):
+            score += 4
+        elif category == "Food & Beverage" and ('food' in domain_lower or 'eat' in domain_lower or 'kitchen' in domain_lower):
+            score += 4
+    
+    return score
 
 # Enhanced function to extract website information with better content access
 def extract_website_info(url, max_retries=3):
