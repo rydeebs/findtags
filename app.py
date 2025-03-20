@@ -844,8 +844,435 @@ def extract_website_info(url, max_retries=3):
             'is_parked': False,
             'final_url': None
         }
+
+# NEW ENHANCED FUNCTIONS FOR BETTER URL-BASED CATEGORIZATION
+
+# Enhanced domain tokenization
+def extract_enhanced_domain_parts(domain):
+    """
+    Extract meaningful parts from domain name with improved tokenization
+    
+    Args:
+        domain: Domain name (normalized)
         
-# Function to process a batch of websites
+    Returns:
+        List of meaningful domain parts
+    """
+    if not domain:
+        return []
+    
+    # Remove www. if present
+    if domain.startswith('www.'):
+        domain = domain[4:]
+    
+    # Extract parts
+    parts = []
+    
+    # Step 1: Split by obvious separators
+    for part in re.split(r'[.-]', domain):
+        if len(part) > 2:  # Only meaningful parts
+            # Remove common TLDs and domain words
+            if part.lower() not in ['com', 'org', 'net', 'io', 'co', 'inc', 'llc', 'store', 'shop', 'app', 'tech', 'site', 'info', 'biz', 'online']:
+                parts.append(part.lower())
+    
+    # Step 2: Detect and split compound words (camelCase and PascalCase)
+    additional_parts = []
+    for part in parts:
+        # Find potential compound words
+        compounds = re.findall(r'([a-z])([A-Z])', part)
+        if compounds:
+            # Split at capital letters
+            words = re.sub(r'([a-z])([A-Z])', r'\1 \2', part).lower().split()
+            additional_parts.extend([w for w in words if len(w) > 2])
+    
+    # Step 3: Dictionary-based word splitting for domains without separators
+    # (This would require a dictionary - simplified version here)
+    for part in parts[:]:  # Work on a copy
+        if len(part) > 7:  # Only try to split longer words
+            # Try to detect common embedded words
+            for common_word in ['app', 'tech', 'shop', 'store', 'food', 'health', 'eco', 'bio', 'care', 'home', 'auto', 'web', 'cloud', 'soft', 'med', 'sport', 'fit', 'pet', 'edu', 'pro', 'office']:
+                if common_word in part and part != common_word:
+                    # Split around the common word
+                    split_parts = part.split(common_word)
+                    if all(len(sp) > 0 for sp in split_parts):  # Only if it results in meaningful splits
+                        additional_parts.append(common_word)
+                        additional_parts.extend([sp for sp in split_parts if len(sp) > 2])
+    
+    parts.extend(additional_parts)
+    return list(set(parts))  # Remove duplicates
+
+# Generate n-grams from domain parts
+def generate_ngrams(parts, n=2):
+    """
+    Generate n-grams (pairs of words) from domain parts
+    """
+    ngrams = []
+    for i in range(len(parts) - n + 1):
+        ngram = " ".join(parts[i:i+n])
+        ngrams.append(ngram)
+    return ngrams
+
+# Calculate base category score
+def calculate_category_score(text, keywords):
+    """
+    Calculate basic score based on keyword matching
+    """
+    score = 0
+    for keyword in keywords:
+        # Exact match (higher weight)
+        if keyword in text:
+            # Weight by keyword specificity
+            weight = 2
+            # Higher weight for longer, more specific keywords
+            if len(keyword) > 5:
+                weight = 3
+            score += weight
+        
+        # Partial match (lower weight)
+        elif any(keyword in word for word in text.split()):
+            score += 0.5
+            
+    return score
+
+# Detect industry-specific patterns in domains
+def detect_industry_patterns(domain, category):
+    """
+    Apply industry-specific pattern detection to domain names
+    """
+    domain_lower = domain.lower()
+    
+    score = 0
+    
+    # Industry-specific patterns
+    if category == "Food & Beverage":
+        food_patterns = ['food', 'eat', 'meal', 'dine', 'cook', 'chef', 'kitchen', 'cafe', 'restaurant', 'pizza', 'burger', 'grill', 'bakery', 'brew', 'coffee', 'tea', 'juice', 'fruit', 'veg', 'organic', 'farm', 'fresh', 'market', 'grocery', 'diet', 'nutrition']
+        for pattern in food_patterns:
+            if pattern in domain_lower:
+                score += 3
+    
+    elif category == "Transportation":
+        transport_patterns = ['transport', 'logistics', 'shipping', 'delivery', 'freight', 'cargo', 'truck', 'fleet', 'bus', 'taxi', 'travel', 'transit', 'courier', 'train', 'rail', 'ship', 'vessel', 'aviation', 'airline', 'airport', 'vehicle', 'mobility', 'move', 'flight', 'express']
+        for pattern in transport_patterns:
+            if pattern in domain_lower:
+                score += 3
+    
+    elif category == "Supplement":
+        supplement_patterns = ['supplement', 'vitamin', 'mineral', 'nutrition', 'dietary', 'protein', 'fitness', 'health', 'wellness', 'natural', 'organic', 'herb', 'omega', 'nutrient', 'biotech', 'life', 'body', 'active', 'energy', 'boost']
+        for pattern in supplement_patterns:
+            if pattern in domain_lower:
+                score += 3
+    
+    elif category == "Electronics":
+        tech_patterns = ['tech', 'electronic', 'digital', 'computer', 'device', 'gadget', 'software', 'hardware', 'app', 'web', 'net', 'cyber', 'data', 'mobile', 'phone', 'smart', 'robot', 'ai', 'code', 'dev', 'program']
+        for pattern in tech_patterns:
+            if pattern in domain_lower:
+                score += 3
+    
+    elif category == "Medical":
+        medical_patterns = ['med', 'health', 'care', 'clinic', 'hospital', 'doctor', 'therapy', 'pharma', 'drug', 'dental', 'vision', 'eye', 'cardio', 'neuro', 'ortho', 'rehab', 'physical', 'mental', 'psych', 'wellness']
+        for pattern in medical_patterns:
+            if pattern in domain_lower:
+                score += 3
+    
+    elif category == "Clothing":
+        clothing_patterns = ['wear', 'apparel', 'clothing', 'fashion', 'style', 'outfit', 'dress', 'shirt', 'pants', 'jacket', 'coat', 'suit', 'uniform', 'casual', 'formal', 'sport', 'design', 'boutique', 'textile', 'fabric']
+        for pattern in clothing_patterns:
+            if pattern in domain_lower:
+                score += 3
+    
+    elif category == "Footwear":
+        footwear_patterns = ['shoe', 'foot', 'boot', 'sneaker', 'sandal', 'heel', 'sole', 'insole', 'run', 'walk', 'comfort', 'sport', 'athletic', 'casual', 'formal']
+        for pattern in footwear_patterns:
+            if pattern in domain_lower:
+                score += 3
+    
+    elif category == "Home Goods":
+        home_patterns = ['home', 'house', 'living', 'furniture', 'decor', 'interior', 'kitchen', 'bath', 'bed', 'room', 'garden', 'appliance', 'domestic', 'design', 'comfort', 'light', 'lamp', 'rug', 'carpet']
+        for pattern in home_patterns:
+            if pattern in domain_lower:
+                score += 3
+    
+    elif category == "Packaging":
+        packaging_patterns = ['pack', 'box', 'container', 'wrap', 'packaging', 'ship', 'label', 'tape', 'carton', 'bottle', 'bag', 'pouch', 'film', 'plastic', 'paper', 'bundle']
+        for pattern in packaging_patterns:
+            if pattern in domain_lower:
+                score += 3
+                
+    elif category == "Personal Care":
+        care_patterns = ['beauty', 'skin', 'care', 'hair', 'makeup', 'cosmetic', 'salon', 'spa', 'groom', 'hygiene', 'perfume', 'fragrance', 'clean', 'lotion', 'cream']
+        for pattern in care_patterns:
+            if pattern in domain_lower:
+                score += 3
+                
+    elif category == "Jewelry":
+        jewelry_patterns = ['jewel', 'jewelry', 'gem', 'diamond', 'gold', 'silver', 'accessory', 'watch', 'ring', 'necklace', 'bracelet', 'earring', 'pearl', 'precious']
+        for pattern in jewelry_patterns:
+            if pattern in domain_lower:
+                score += 3
+                
+    elif category == "Agriculture":
+        agri_patterns = ['farm', 'agri', 'crop', 'garden', 'plant', 'grow', 'seed', 'harvest', 'organic', 'soil', 'food', 'produce', 'vegetable', 'fruit']
+        for pattern in agri_patterns:
+            if pattern in domain_lower:
+                score += 3
+                
+    elif category == "Automotive":
+        auto_patterns = ['auto', 'car', 'vehicle', 'motor', 'drive', 'truck', 'garage', 'repair', 'tire', 'wheel', 'engine', 'brake', 'part', 'dealer']
+        for pattern in auto_patterns:
+            if pattern in domain_lower:
+                score += 3
+                
+    elif category == "Entertainment":
+        entertainment_patterns = ['fun', 'game', 'play', 'entertainment', 'movie', 'film', 'music', 'theater', 'show', 'event', 'concert', 'ticket', 'festival', 'party', 'media', 'stream']
+        for pattern in entertainment_patterns:
+            if pattern in domain_lower:
+                score += 3
+                
+    elif category == "Industrial":
+        industrial_patterns = ['industry', 'industrial', 'factory', 'manufacture', 'machine', 'equipment', 'tool', 'part', 'material', 'production', 'supply', 'build', 'construct', 'steel', 'metal', 'product']
+        for pattern in industrial_patterns:
+            if pattern in domain_lower:
+                score += 3
+    
+    return score
+
+# Calculate score based on n-gram matching
+def calculate_ngram_score(ngrams, keywords):
+    """
+    Calculate score based on n-gram matching with keywords
+    """
+    score = 0
+    for ngram in ngrams:
+        for keyword in keywords:
+            if keyword in ngram:
+                score += 2  # Higher weight for n-gram matches
+    return score
+
+# Apply context multipliers for better categorization
+def get_context_multiplier(category, domain_parts):
+    """
+    Get context-based multiplier for category scores
+    """
+    # Default multiplier
+    multiplier = 1.0
+    
+    # Strong industry indicators that deserve a boost
+    strong_indicators = {
+        "Food & Beverage": ['food', 'restaurant', 'cafe', 'catering', 'kitchen', 'chef', 'bakery', 'meal'],
+        "Electronics": ['tech', 'electronic', 'digital', 'computer', 'mobile', 'smart'],
+        "Medical": ['health', 'medical', 'clinic', 'hospital', 'pharma', 'therapy'],
+        "Clothing": ['fashion', 'apparel', 'clothing', 'wear', 'outfit'],
+        "Footwear": ['shoe', 'footwear', 'boot', 'sneaker'],
+        "Supplement": ['supplement', 'vitamin', 'nutrition', 'wellness'],
+        "Home Goods": ['home', 'furniture', 'decor', 'interior'],
+        "Transportation": ['transport', 'logistics', 'delivery', 'shipping'],
+        "Industrial": ['industrial', 'manufacturing', 'factory', 'equipment'],
+        "Packaging": ['packaging', 'package', 'container', 'box'],
+        "Personal Care": ['beauty', 'cosmetic', 'skincare', 'haircare'],
+        "Jewelry": ['jewelry', 'accessory', 'gold', 'silver', 'diamond'],
+        "Agriculture": ['farm', 'agriculture', 'crop', 'garden'],
+        "Automotive": ['auto', 'car', 'vehicle', 'automotive'],
+        "Entertainment": ['entertainment', 'game', 'movie', 'music']
+    }
+    
+    # Check if any domain parts are strong indicators for this category
+    if category in strong_indicators:
+        for indicator in strong_indicators[category]:
+            if indicator in domain_parts:
+                multiplier = 1.5  # 50% boost
+                break
+    
+    return multiplier
+
+# Enhanced tie-breaking function
+def break_category_tie(categories, domain):
+    """
+    Break ties between categories with equal scores
+    """
+    domain_lower = domain.lower()
+    
+    # Try to find the most specific match
+    best_match = None
+    best_match_score = 0
+    
+    for category in categories:
+        # Get specific terms for this category
+        specific_terms = CATEGORY_KEYWORDS.get(category, [])
+        
+        # Calculate how many specific terms appear in the domain
+        match_score = 0
+        for term in specific_terms:
+            if term in domain_lower:
+                # Give higher score to longer, more specific terms
+                match_score += len(term)
+        
+        # Track the best match
+        if match_score > best_match_score:
+            best_match_score = match_score
+            best_match = category
+    
+    # If we found a best match, return it
+    if best_match:
+        return best_match
+    
+    # Fallback: return the first category (arbitrary but consistent)
+    return categories[0]
+
+# Enhanced domain-based categorization function
+def enhanced_categorize_by_url(url):
+    """
+    Enhanced function to categorize a website based solely on URL patterns
+    
+    Args:
+        url: Website URL
+        
+    Returns:
+        Tuple of (category, confidence)
+    """
+    if not url:
+        return "Other", 0
+    
+    # Normalize URL and extract domain
+    domain = normalize_url(url)
+    
+    # Extract meaningful parts from domain with improved tokenization
+    domain_parts = extract_enhanced_domain_parts(domain)
+    
+    # Create a combined text from domain parts
+    combined = " ".join(domain_parts)
+    combined_lower = combined.lower()
+    
+    # Enhanced n-gram analysis (consider pairs of words)
+    ngrams = generate_ngrams(domain_parts, 2)
+    
+    # Calculate scores with enhanced weighting
+    category_scores = {}
+    for category, keywords in CATEGORY_KEYWORDS.items():
+        # Base score calculation
+        base_score = calculate_category_score(combined_lower, keywords)
+        
+        # Enhanced pattern detection for industry-specific formats
+        pattern_score = detect_industry_patterns(domain, category)
+        
+        # N-gram matching for multi-word terms
+        ngram_score = calculate_ngram_score(ngrams, keywords)
+        
+        # Apply context multipliers
+        context_multiplier = get_context_multiplier(category, domain_parts)
+        
+        # Combined weighted score
+        total_score = (base_score * 1.0) + (pattern_score * 1.5) + (ngram_score * 1.2)
+        total_score *= context_multiplier
+        
+        category_scores[category] = total_score
+    
+    # Get max score
+    if not category_scores:
+        return "Other", 0
+        
+    max_score = max(category_scores.values())
+    if max_score == 0:
+        return "Other", 0
+        
+    # Find category with max score
+    max_categories = [cat for cat, score in category_scores.items() if score == max_score]
+    
+    # Tie-breaking with enhanced domain affinity
+    if len(max_categories) > 1:
+        best_category = break_category_tie(max_categories, domain)
+    else:
+        best_category = max_categories[0]
+    
+    # Calculate confidence (0.0 to 1.0)
+    confidence = min(max_score / 15, 1.0)  # Cap confidence at 1.0
+    
+    return best_category, confidence
+
+# Enhanced function to process a batch of websites
+def enhanced_process_websites_batch(websites):
+    # Create a progress bar
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    total = len(websites)
+    results = []
+    
+    # Determine the number of workers
+    max_workers = min(10, total)  # Limit to max 10 workers
+    
+    # Show status
+    status_text.text(f"Processing {total} websites...")
+    
+    # Use ThreadPoolExecutor for parallel processing
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_url = {executor.submit(extract_website_info, url): url for url in websites}
+        
+        for i, future in enumerate(concurrent.futures.as_completed(future_to_url)):
+            url = future_to_url[future]
+            try:
+                info = future.result()
+                
+                # If keywords were not found or confidence is low, try enhanced URL-based categorization
+                if info['keywords'] == "No keywords found" or info['confidence'] < 0.3:
+                    enhanced_category, enhanced_confidence = enhanced_categorize_by_url(url)
+                    
+                    # Only use enhanced categorization if it has higher confidence
+                    if enhanced_confidence > info['confidence']:
+                        info['category'] = enhanced_category
+                        info['confidence'] = enhanced_confidence
+                
+                results.append({
+                    'Website': url,
+                    'Status': info['status'],
+                    'Is Parked': "Yes" if info['is_parked'] else "No",
+                    'Top Keywords': info['keywords'],
+                    'Meta Description': info['meta_description'],
+                    'Page Title': info['title'],
+                    'Category': info['category'],
+                    'Confidence': f"{info['confidence']:.2f}"
+                })
+            except Exception as e:
+                # For errors, try URL-based categorization
+                try:
+                    url_category, url_confidence = enhanced_categorize_by_url(url)
+                    results.append({
+                        'Website': url,
+                        'Status': "Error",
+                        'Is Parked': "Unknown",
+                        'Top Keywords': f"Error: {str(e)}",
+                        'Meta Description': '',
+                        'Page Title': '',
+                        'Category': url_category,
+                        'Confidence': f"{url_confidence:.2f}"
+                    })
+                except:
+                    # Fallback if everything fails
+                    results.append({
+                        'Website': url,
+                        'Status': "Error",
+                        'Is Parked': "Unknown",
+                        'Top Keywords': f"Error: {str(e)}",
+                        'Meta Description': '',
+                        'Page Title': '',
+                        'Category': 'Other',
+                        'Confidence': '0.00'
+                    })
+            
+            # Update progress
+            progress = (i + 1) / total
+            progress_bar.progress(progress)
+            status_text.text(f"Processed {i+1}/{total} websites ({int(progress*100)}%)")
+    
+    # Create a DataFrame from results
+    df = pd.DataFrame(results)
+    
+    # Complete
+    progress_bar.progress(1.0)
+    status_text.text(f"Completed processing {total} websites!")
+    
+    return df
+
+# Original function to process a batch of websites (keeping for backward compatibility)
 def process_websites_batch(websites):
     # Create a progress bar
     progress_bar = st.progress(0)
@@ -939,10 +1366,17 @@ if uploaded_file is not None:
         else:
             st.write("Websites:", websites)
         
+        # Add a toggle for using enhanced categorization
+        use_enhanced = st.checkbox("Use Enhanced URL-based Categorization", value=True, 
+                                 help="Turn on advanced domain analysis for better categorization when content can't be accessed")
+        
         # Process button
         if st.button("Analyze Websites"):
             # Process websites and get results
-            st.session_state['results_df'] = process_websites_batch(websites)
+            if use_enhanced:
+                st.session_state['results_df'] = enhanced_process_websites_batch(websites)
+            else:
+                st.session_state['results_df'] = process_websites_batch(websites)
     
     except Exception as e:
         st.error(f"Error processing file: {str(e)}")
